@@ -8,4 +8,3 @@ authors = ["lollipopkit"]
 [dependencies]
 anyhow = "1.0.86"
 clap = { version = "4.5.4", features = ["derive"] }
-lazy_static = "1.4.0"
