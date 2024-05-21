@@ -1,0 +1,11 @@
+[package]
+name = "twmds"
+description = "A script to batch download twitter media via `twmd`."
+version = "0.1.0"
+edition = "2021"
+authors = ["lollipopkit"]
+
+[dependencies]
+anyhow = "1.0.86"
+clap = { version = "4.5.4", features = ["derive"] }
+lazy_static = "1.4.0"
