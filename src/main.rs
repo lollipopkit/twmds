@@ -11,6 +11,7 @@ use anyhow::{anyhow, Result};
 use args::Args;
 use clap::Parser;
 use utils::*;
+use wait_timeout::ChildExt;
 
 mod args;
 mod macros;
@@ -18,6 +19,8 @@ mod utils;
 
 const RATE_LIMIT: &str = "Rate limit exceeded";
 const ALREADY_EXISTS: &str = "already exists";
+const LOGGED_IN: &str = "Logged in";
+//const ACCESS_CTRL: &str = "Authorization: Denied by access control: Missing LdapGroup(visibility-admins); Missing LdapGroup(visibility-custom-suspension)";
 const DOWNLOADED: &str = "Downloaded";
 const ERROR: &str = "error";
 const DAY_SECS: u64 = 60 * 60 * 24;
@@ -84,41 +87,53 @@ fn main() -> Result<()> {
             }
         }
 
-        let skip_flag = format!("{}/{}", &user_name, ".skip");
-        let skip_file_stat = fs::metadata(&skip_flag);
-        match skip_file_stat {
-            Ok(meta) => {
-                let mod_ts = if let Ok(mod_ts) = meta.modified() {
-                    mod_ts
-                } else {
-                    println!("😣 未能获取文件修改时间");
-                    continue;
-                };
-                let mod_ts = mod_ts.elapsed().unwrap_or_default().as_secs();
-                if mod_ts < DAY_SECS {
-                    println!("🕒 上次更新在 {} 前，跳过", secs_to_human(mod_ts));
-                    continue;
+        let skip_path = format!("{}/{}", &user_name, ".skip");
+        if !args.ignore_skip_file {
+            let skip_file_stat = fs::metadata(&skip_path);
+            match skip_file_stat {
+                Ok(meta) => {
+                    let mod_ts = if let Ok(mod_ts) = meta.modified() {
+                        mod_ts
+                    } else {
+                        println!("😣 未能获取文件修改时间");
+                        continue;
+                    };
+                    let mod_ts = mod_ts.elapsed().unwrap_or_default().as_secs();
+                    if mod_ts < DAY_SECS {
+                        println!("🕒 上次更新在 {} 前，跳过", secs_to_human(mod_ts));
+                        continue;
+                    }
                 }
+                _ => (),
             }
-            _ => (),
         }
 
-        let mut only_retweet = "";
-        // 是否存在 .only_retweet 文件
-        if let Ok(meta) = fs::metadata(format!("{}/{}", &user_name, ".retweet_only")) {
+        let retweet_only_path = format!("{}/{}", &user_name, ".retweet_only");
+        let mut only_retweet = false;
+        if let Ok(meta) = fs::metadata(retweet_only_path) {
             if meta.is_file() {
-                only_retweet = "--retweet-only";
+                only_retweet = true;
+            }
+        }
+
+        let mut need_login = !args.no_login;
+        let login_path = format!("{}/{}", &user_name, ".login");
+        if let Ok(meta) = fs::metadata(&login_path) {
+            if meta.is_file() {
+                need_login = true;
             }
         }
 
         let mut cmd = process::Command::new("twmd");
         cmd.arg("-B");
-        if !args.no_login {
+        if need_login {
             cmd.arg("--login");
         }
         cmd.arg("--all");
         cmd.arg("--update");
-        cmd.arg(only_retweet);
+        if only_retweet {
+            cmd.arg("--retweet-only");
+        }
         cmd.arg("--user");
         cmd.arg(&user_name);
         cmd.stdout(Stdio::piped());
@@ -138,7 +153,7 @@ fn main() -> Result<()> {
             let mut exists_lines = 0;
             let mut err_lines = 0;
             let mut dl_lines = 0;
-            // 不正常的行（非 already exists 和 Download）
+            // 不正常的行（非 already exists、Download、error）
             let mut abnormal_lines = Vec::new();
 
             // 按行读取输出
@@ -146,7 +161,7 @@ fn main() -> Result<()> {
             for line in reader.lines() {
                 total_lines += 1;
                 let line = if let Ok(line) = line {
-                    line
+                    line.trim().to_string()
                 } else {
                     continue;
                 };
@@ -164,6 +179,9 @@ fn main() -> Result<()> {
                     }
                     break;
                 }
+                if line == LOGGED_IN {
+                    continue;
+                }
                 if line.contains(RATE_LIMIT) {
                     println!("\n🚫 {}", RATE_LIMIT);
                     if child.kill().is_ok() {
@@ -172,7 +190,7 @@ fn main() -> Result<()> {
                     sleep(Duration::from_secs(args.sleep * 30));
                     break;
                 }
-                if line.contains(ALREADY_EXISTS) {
+                if line.ends_with(ALREADY_EXISTS) {
                     exists_lines += 1;
                     continue;
                 }
@@ -187,15 +205,23 @@ fn main() -> Result<()> {
                 abnormal_lines.push(line);
             }
 
+            if total_lines == 0 {
+                File::create(format!("{}/{}", &user_name, ".login"))?;
+                println!("🚫 无输出，已生成 .login");
+                continue;
+            }
+
             println!(
                 "\n📦 总 {}，下载 {}，存在 {}，失败 {}",
                 total_lines, dl_lines, exists_lines, err_lines
             );
 
             if err_lines <= total_lines / 10 {
-                // 如果无法生成 .skip 文件，直接 panic，设计如此
-                File::create(skip_flag).unwrap();
+                File::create(&skip_path)?;
                 println!("💡 生成 .skip 文件");
+            } else if err_lines >= total_lines / 3 {
+                File::create(&login_path)?;
+                println!("🚫 失败率过高，已生成 {}", &login_path);
             }
 
             if !abnormal_lines.is_empty() {
@@ -205,7 +231,18 @@ fn main() -> Result<()> {
             }
         }
 
-        let _ = child.wait()?;
+        match child.wait_timeout(Duration::from_secs(60 * 5)) {
+            Ok(Some(_)) => (),
+            Ok(None) => {
+                println!("🚫 超时");
+                if child.kill().is_ok() {
+                    println!("🚫 已终止");
+                }
+            }
+            Err(err) => {
+                println!("🚫 等待 twmd 失败：{}", err);
+            }
+        }
         sleep(Duration::from_secs(args.sleep));
     }
 

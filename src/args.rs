@@ -12,6 +12,8 @@ pub struct Args {
     pub no_login: bool,
     #[clap(short, long, help = "Sleep seconds", default_value_t = 15)]
     pub sleep: u64,
-    #[arg(short = 'd', long, help = "Skip dirs")]
+    #[arg(short = 'S', long, help = "Skip dirs")]
     pub skip_dirs: Vec<String>,
+    #[clap(short, long, help = "Ignore .skip file")]
+    pub ignore_skip_file: bool,
 }
