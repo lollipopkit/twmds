@@ -1,17 +1,18 @@
 use std::{
     env,
     fs::{self, DirEntry, File},
-    io::{BufRead, BufReader, Error, Write},
+    io::{BufRead, BufReader, Write},
     process::{self, Stdio},
     thread::sleep,
     time::Duration,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use args::Args;
 use clap::Parser;
 use utils::*;
 use wait_timeout::ChildExt;
+use rand::seq::SliceRandom;
 
 mod args;
 mod macros;
@@ -30,22 +31,18 @@ fn main() -> Result<()> {
 
     let pwd = env::var("PWD").unwrap_or_else(|_| ".".to_string());
 
-    let folders: Vec<Result<DirEntry, Error>> = fs::read_dir(&pwd)
-        .map_err(|_| anyhow!("😣 获取文件夹列表失败"))?
+    let mut folders: Vec<DirEntry> = fs::read_dir(&pwd)?
+        .filter_map(|entry| entry.ok())
         .collect();
+    let mut rng = rand::thread_rng();
+    folders.shuffle(&mut rng);
+
     let total_count = folders.len();
     println!("🚀 开始，总计 {} 个", total_count);
 
     let mut counter = 0;
     let mut perm_skip_names = Vec::new();
     for entry in folders {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(err) => {
-                println!("😣 获取文件夹失败：{}", err);
-                continue;
-            }
-        };
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(err) => {

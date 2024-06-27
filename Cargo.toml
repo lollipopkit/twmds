@@ -8,4 +8,5 @@ authors = ["lollipopkit"]
 [dependencies]
 anyhow = "1.0.86"
 clap = { version = "4.5.4", features = ["derive"] }
+rand = "0.8.5"
 wait-timeout = "0.2"
